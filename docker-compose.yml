@@ -1,0 +1,73 @@
+# ============================================================================
+# Darwix AI — Docker Compose
+# ============================================================================
+# Services:
+#   - app: FastAPI application
+#   - postgres: PostgreSQL database (optional, for production)
+# ============================================================================
+
+version: "3.9"
+
+services:
+  # ── Application ────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: darwix-ai
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=Darwix AI
+      - DATABASE_URL=sqlite:///./darwix.db
+      - LOG_LEVEL=INFO
+      - WHISPER_MODEL_SIZE=base
+      - TTS_PROVIDER=gtts
+      - SENTIMENT_ENABLED=true
+    volumes:
+      - darwix_uploads:/app/uploads
+      - darwix_outputs:/app/outputs
+      - darwix_data:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── PostgreSQL (optional — uncomment for production) ───────────────────
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: darwix-postgres
+  #   environment:
+  #     POSTGRES_DB: darwix
+  #     POSTGRES_USER: darwix
+  #     POSTGRES_PASSWORD: darwix_secret
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U darwix"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # ── Redis (optional — uncomment for Celery task queue) ─────────────────
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: darwix-redis
+  #   ports:
+  #     - "6379:6379"
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+
+volumes:
+  darwix_uploads:
+  darwix_outputs:
+  darwix_data:
+  # pgdata:

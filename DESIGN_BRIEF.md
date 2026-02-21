@@ -1,72 +1,25 @@
-# 📘 Design Brief — Darwix AI Sales Call Intelligence
+# Darwix AI: Design & Architecture Brief
 
-## Architectural Decisions
+## 1. Architectural Decisions
+The Darwix AI microservice follows a **Service-Oriented Architecture (SOA)** with a focus on **Separation of Concerns**.
 
-### Clean Architecture & Separation of Concerns
+*   **API Layer (FastAPI)**: Handles validation, routing, and request/response lifecycle. It remains "thin," delegating all processing to specialized services.
+*   **Service Layer**: Encapsulates the business logic for STT, TTS, Sentiment, and Coachable detection. This makes the system modular; for instance, the STT provider can be swapped from Whisper to Deepgram by updating just one class.
+*   **Persistence Layer**: Uses SQLAlchemy ORM to decouple the business logic from the specific database implementation (SQLite for dev, PostgreSQL for prod).
 
-The system follows a strict layered architecture:
+## 2. Scalability Strategy
+To handle "high reliability and real-time use cases," the architecture is designed for **Horizontal Scaling**:
 
-1. **API Layer** (`app/api/`): Handles HTTP concerns only — request parsing, response formatting, status codes. Contains zero business logic.
-2. **Service Layer** (`app/services/`): Each ML/AI capability (STT, TTS, Sentiment, Coachable Detection) is an independent, testable module with its own interface.
-3. **Worker Layer** (`app/workers/`): Orchestrates multi-step pipelines. Designed as a Celery task body — the transition from synchronous to async is a configuration change, not a rewrite.
-4. **Database Layer** (`app/db/`): ORM models and session management, injected into API routes via FastAPI's `Depends()`.
+*   **Stateless API**: The FastAPI layer is stateless and can be scaled behind a load balancer (Nginx/ALB).
+*   **Task Queuing (Celery/Redis)**: Long-running audio processing (STT) is decoupled from the request-response cycle. While currently synchronous for MVP simplicity, the code is structured for an immediate transition to Celery workers.
+*   **Database Partitioning**: The schema uses `call_id` as a primary index, allowing for future database sharding if the ingestion volume exceeds a single instance's capacity.
 
-**Why modular design?** Each service can be:
-- Tested independently with mocks
-- Replaced (e.g., swap Whisper for AWS Transcribe) without touching other layers
-- Scaled separately (GPU workers for STT, CPU for coachable detection)
+## 3. Fault Tolerance & Reliability
+*   **Graceful Degradation**: If non-critical services (like Sentiment Analysis) fail, the system is designed to catch the exception and continue with the transcription rather than crashing the whole request.
+*   **Structured Logging**: Every operation is logged with a common `call_id` to allow for distributed tracing and rapid debugging during outages.
+*   **Safety Guards**: Integrated `static-ffmpeg` to ensure the environment has necessary audio binaries regardless of the host OS configuration.
 
-### Horizontal Scalability
-
-The system is **stateless by design**:
-- No in-memory caches or session state
-- All data flows through the database
-- Audio files stored on disk (or object storage in production)
-- Any API instance can serve any request
-
-**Scaling strategy:**
-- **Phase 1 (current)**: Single process, SQLite, synchronous
-- **Phase 2**: Multiple uvicorn workers, PostgreSQL, add DB pool tuning
-- **Phase 3**: Celery workers for STT/ML, RabbitMQ broker, GPU worker nodes
-- **Phase 4**: Kubernetes deployment, HPA on API pods, GPU node pools for workers
-
-### Fault Tolerance Strategy
-
-1. **Graceful degradation**: Sentiment analysis failure doesn't block transcription. Coachable detection failure doesn't block the response.
-2. **Structured error hierarchy**: `DarwixBaseError` → typed exceptions → mapped HTTP status codes. No raw `Exception` leaks to the client.
-3. **Retry design**: Worker tasks use `try/except` with status tracking (`pending → processing → completed | failed`). In Celery, this maps to `max_retries=3` with exponential backoff.
-4. **Monitoring**: JSON-structured logging with timestamps, module names, and exception traces — ready for ELK/Datadog/CloudWatch ingestion.
-
-**Backlog handling:**
-- Overloaded system → requests queue in the message broker
-- Workers autoscale based on queue depth
-- API returns `202 Accepted` with a polling endpoint (future)
-- Dead letter queue for permanently failed tasks
-
-### Trade-offs Made for MVP
-
-| Area | Decision | Production path |
-|------|----------|-----------------|
-| Diarization | Gap-based speaker alternation | Integrate pyannote-audio or cloud diarization API |
-| Coachable detection | Regex patterns + sentiment boost | Fine-tune a DistilBERT classifier on labeled sales data |
-| Task processing | Synchronous in request cycle | Celery with Redis/RabbitMQ broker |
-| Database | SQLite with WAL mode | PostgreSQL with read replicas |
-| TTS | gTTS (network-dependent) | Self-hosted Coqui TTS or ElevenLabs API |
-| Auth | None | JWT/OAuth2 with FastAPI Security |
-
-### Extensibility Plan
-
-The architecture supports extension without modification (Open/Closed Principle):
-
-1. **New STT provider**: Implement `transcribe(audio_path) → TranscriptionResult` interface
-2. **New coachable category**: Add regex patterns to the pattern list, or plug in an ML classifier
-3. **New API endpoint**: Add route in `app/api/`, delegate to a new or existing service
-4. **New database**: Change `DATABASE_URL` in `.env`; add Alembic for migrations
-5. **Real-time processing**: Add WebSocket endpoint that streams to STT service
-6. **Multi-tenant**: Add tenant_id to models, scope queries, add auth middleware
-
-The goal: **every change is additive, not surgical.**
-
----
-
-*Document version: 1.0 | Last updated: 2026-02-21*
+## 4. Trade-offs & Decisions
+*   **SQLite for MVP**: Chosen for the "24-hour timebox" to ensure Zero-Config setup for reviewers. SQLAlchemy makes the shift to PostgreSQL a simple configuration change.
+*   **Heuristic Diarization**: Used a timestamp-gap based diarization (1.5s silence) as a lightweight, low-latency alternative to heavy clustering models like Pyannote, which require significantly more compute.
+*   **Mocking in Tests**: Used extensive mocking for ML models in CI/CD to ensure the pipeline is fast (runs in < 1 minute) while still verifying API and logic integrity.
